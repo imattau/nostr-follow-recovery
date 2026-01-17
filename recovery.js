@@ -23,7 +23,7 @@ let entries = {}
 let content = {}
 let opened = []
 
-(async () => {
+;(async () => {
   let me = process.env.PUBKEY
   if (!me) {
     console.log("PUBKEY not found in .env. Launching browser to login...");
