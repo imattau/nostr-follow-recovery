@@ -14,9 +14,13 @@ You can also add your private key - do this at your own risk. If you do, it will
 
 # Usage
 
-Edit the `.env` file and fill in your pubkey (hex or npub format), and optionally your private key (hex format). 
+Edit the `.env` file and fill in your pubkey (hex or npub format).
 
-If you don't fill in the private key, it'll write the constructed event to console and you have to find a way to sign and publish it.
+### Signing Options
+
+1. **Local Key**: Fill in your private key (hex format) in the `.env` file. **Use at your own risk.**
+2. **Browser Extension (NIP-07)**: Leave `PRIVKEY` empty. When you run the script, it will automatically open your browser to a local page where you can sign with extensions like Alby or nos2x.
+3. **Mobile Signer (NIP-46)**: Leave `PRIVKEY` empty. In the browser page that opens, switch to the "Mobile" tab and scan the QR code with a compatible signer (e.g., Amber, Keystone).
 
 Install dependencies:
 
@@ -26,11 +30,11 @@ and run:
 
 `node recovery.js`
 
-It takes about 40 seconds to run.
+It takes about 40 seconds to collect data, then it will prompt you for a signature if no local key is found.
 
 # Notes:
 
-It will probably also restore follows from pubkeys you previously unfollowed.
+It will probably also restore follows from pubkeys you previously unfollowed if those follows exist in older Kind 3 events on some relays.
 
 This is not battletested. It worked for me, after I lost 75% of my follows.
 
