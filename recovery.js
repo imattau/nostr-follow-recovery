@@ -17,27 +17,32 @@ const DEFAULT_RELAYS = [
   "wss://purplepag.es"
 ];
 
-// Start immediately with default relays
-// createPool(DEFAULT_RELAYS);
-
-let me = process.env.PUBKEY
-if (!me) {
-  console.error("Error: PUBKEY is missing in .env file.");
-  process.exit(1);
-}
-if (me.startsWith('npub1')) me = npubtopubkey(me)
-
-console.log(`Finding follow lists for ${me}`)
-
-createPool(DEFAULT_RELAYS);
-
 let follows = []
 let muted = []
 let entries = {}
 let content = {}
 let opened = []
 
-function createPool(relays) {
+(async () => {
+  let me = process.env.PUBKEY
+  if (!me) {
+    console.log("PUBKEY not found in .env. Launching browser to login...");
+    try {
+      me = await getPublicKeyFromBrowser();
+      console.log("Received public key:", me);
+    } catch (err) {
+      console.error("Failed to get public key:", err);
+      process.exit(1);
+    }
+  }
+  if (me.startsWith('npub1')) me = npubtopubkey(me)
+
+  console.log(`Finding follow lists for ${me}`)
+
+  createPool(DEFAULT_RELAYS, me);
+})();
+
+function createPool(relays, me) {
 
   const pool = RelayPool(relays, {reconnect: false})
   
@@ -197,7 +202,7 @@ function getSignatureFromBrowser(event) {
       
       if (req.method === 'GET' && req.url === '/') {
         res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(`
+        const html = `
           <!DOCTYPE html>
           <html>
           <head>
@@ -240,7 +245,7 @@ function getSignatureFromBrowser(event) {
             <pre id="eventDisplay">${JSON.stringify(event, null, 2)}</pre>
 
             <script>
-              const eventToSign = ${JSON.stringify(event)};
+              const eventToSign = __EVENT_JSON__;
               const status = document.getElementById('status');
               
               // --- Utils ---
@@ -354,7 +359,8 @@ function getSignatureFromBrowser(event) {
             </script>
           </body>
           </html>
-        `);
+        `;
+        res.end(html.replace('__EVENT_JSON__', JSON.stringify(event)));
       } else if (req.method === 'POST' && req.url === '/signed') {
         let body = '';
         req.on('data', chunk => {
@@ -380,6 +386,176 @@ function getSignatureFromBrowser(event) {
       const port = server.address().port;
       const url = `http://localhost:${port}`;
       console.log(`Opening browser at ${url} to sign event...`);
+      await open(url);
+    });
+  });
+}
+
+function getPublicKeyFromBrowser() {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((req, res) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      
+      if (req.method === 'GET' && req.url === '/') {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(`
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <title>Login to Nostr Follow Recovery</title>
+            <script src="https://unpkg.com/nostr-tools/lib/nostr.bundle.js"></script>
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+            <style>
+              body { font-family: sans-serif; padding: 20px; text-align: center; max-width: 800px; margin: 0 auto; }
+              button { padding: 10px 20px; font-size: 1.2em; cursor: pointer; margin: 10px; }
+              .error { color: red; }
+              .success { color: green; }
+              .tab { display: none; padding: 20px; border: 1px solid #ccc; border-radius: 5px; margin-top: 20px; }
+              .tab.active { display: block; }
+              .tabs-nav button { background: #eee; border: 1px solid #ccc; border-bottom: none; }
+              .tabs-nav button.active { background: #fff; font-weight: bold; }
+              #qrcode { margin: 20px auto; display: flex; justify-content: center; }
+            </style>
+          </head>
+          <body>
+            <h1>Login</h1>
+            <p>Please provide your public key to start recovering follows.</p>
+
+            <div class="tabs-nav">
+              <button onclick="switchTab('extension')" id="btn-extension" class="active">Browser Extension</button>
+              <button onclick="switchTab('mobile')" id="btn-mobile">Mobile (NIP-46)</button>
+            </div>
+
+            <div id="tab-extension" class="tab active">
+              <p>Login using Alby, nos2x, or other browser extensions.</p>
+              <button id="loginBtnExtension">Get Public Key</button>
+            </div>
+
+            <div id="tab-mobile" class="tab">
+              <p>Scan with a NIP-46 compatible signer (e.g., Amber, Keystone).</p>
+              <div id="qrcode"></div>
+              <p id="nip46-status">Waiting for connection...</p>
+            </div>
+
+            <p id="status"></p>
+
+            <script>
+              const status = document.getElementById('status');
+              
+              async function sendPubkey(pubkey) {
+                status.innerText = "Received " + pubkey + "! Sending back to CLI...";
+                await fetch('/pubkey', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ pubkey })
+                });
+                status.innerText = "Success! You can close this window.";
+                status.className = "success";
+                document.querySelectorAll('button').forEach(b => b.disabled = true);
+              }
+
+              function switchTab(tab) {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.getElementById('tab-' + tab).classList.add('active');
+                document.querySelectorAll('.tabs-nav button').forEach(b => b.classList.remove('active'));
+                document.getElementById('btn-' + tab).classList.add('active');
+                if (tab === 'mobile') initNip46();
+              }
+
+              // --- Extension Login ---
+              document.getElementById('loginBtnExtension').onclick = async () => {
+                try {
+                  if (!window.nostr) throw new Error("No Nostr extension found!");
+                  status.innerText = "Requesting public key...";
+                  const pubkey = await window.nostr.getPublicKey();
+                  await sendPubkey(pubkey);
+                } catch (err) {
+                  console.error(err);
+                  status.innerText = "Error: " + err.message;
+                  status.className = "error";
+                }
+              };
+
+              // --- NIP-46 Mobile Login ---
+              let nip46Init = false;
+              async function initNip46() {
+                if (nip46Init) return;
+                nip46Init = true;
+                
+                const tools = window.NostrTools;
+                const relayUrl = 'wss://relay.nsec.app';
+                const sk = tools.generatePrivateKey();
+                const pk = tools.getPublicKey(sk);
+                const secret = Math.random().toString(36).substring(2, 15);
+                
+                const uri = \`nostrconnect://\${pk}?relay=\${encodeURIComponent(relayUrl)}&metadata=\${encodeURIComponent(JSON.stringify({name: "Nostr Follow Recovery Login"}))}&secret=\${secret}\`;
+                
+                new QRCode(document.getElementById("qrcode"), uri);
+                
+                const pool = new tools.SimplePool();
+                const sub = pool.subscribeMany([relayUrl], [{ kinds: [24133], '#p': [pk] }], {
+                  onevent: async (msg) => {
+                    try {
+                      const content = JSON.parse(msg.content);
+                      
+                      // Handle 'connect' request from Signer
+                      if (content.method === 'connect') {
+                         document.getElementById('nip46-status').innerText = "Connected! Requesting public key...";
+                         const signerPubkey = content.params[0];
+                         
+                         // Reply 'connect' success
+                         const replyConnect = {
+                           kind: 24133,
+                           created_at: Math.floor(Date.now() / 1000),
+                           tags: [['p', signerPubkey]],
+                           content: JSON.stringify({ id: content.id, result: "ack", error: null })
+                         };
+                         replyConnect.pubkey = pk;
+                         replyConnect.id = tools.getEventHash(replyConnect);
+                         replyConnect.sig = tools.getSignature(replyConnect, sk);
+                         await pool.publish([relayUrl], replyConnect);
+
+                         // We already have the signer's pubkey from the connect params!
+                         // But to be polite/standard we could ask for get_public_key, 
+                         // but 'connect' already gives it.
+                         pool.close(sub);
+                         await sendPubkey(signerPubkey);
+                      }
+                    } catch (e) {
+                      console.error("NIP-46 Error:", e);
+                    }
+                  }
+                });
+              }
+            </script>
+          </body>
+          </html>
+        `);
+      } else if (req.method === 'POST' && req.url === '/pubkey') {
+        let body = '';
+        req.on('data', chunk => {
+          body += chunk.toString();
+        });
+        req.on('end', () => {
+          res.writeHead(200, { 'Content-Type': 'text/plain' });
+          res.end('Received');
+          server.close();
+          try {
+            resolve(JSON.parse(body).pubkey);
+          } catch (e) {
+            reject(e);
+          }
+        });
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+
+    server.listen(0, 'localhost', async () => {
+      const port = server.address().port;
+      const url = `http://localhost:${port}`;
+      console.log(`Opening browser at ${url} to login...`);
       await open(url);
     });
   });
