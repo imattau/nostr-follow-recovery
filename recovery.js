@@ -1,6 +1,8 @@
 require('dotenv').config();
 
 const https = require("https");
+const http = require("http");
+const open = require("open");
 const { RelayPool, calculateId, signId } = require('nostr');
 const WebSocket = require('ws')
 const { bech32 } = require('bech32')
@@ -114,38 +116,43 @@ function createPool(relays) {
 
     event.id = await calculateId(event)
 
-    if (!process.env.PRIVKEY) {
+    let signedEvent = null;
 
-      console.log(JSON.stringify(event))
-      process.exit(0)
-
-    } else {
-
+    if (process.env.PRIVKEY) {
       event.sig = await signId(process.env.PRIVKEY, event.id)
-  
-      console.log(JSON.stringify(event))
-  
-      let writeRelays = []
-      for (let [relay, stats] of Object.entries(content)) {
-        if (opened.includes(relay) && stats.write) {
-          writeRelays.push(relay)
-        }
+      signedEvent = event;
+    } else {
+      console.log("No private key found in env. Attempting to sign via browser...");
+      try {
+        signedEvent = await getSignatureFromBrowser(event);
+      } catch (err) {
+        console.error("Failed to get signature:", err);
+        process.exit(1);
       }
-  
-      for (let relay of pool.relays) {
-        if (writeRelays.includes(relay.url) && relay.ws && relay.ws.readyState === 1) {
-          console.log(`Sending to ${relay.url}`)
-          await relay.send(["EVENT", event])
-        }
-      }
-      
-      // Wait a bit for responses
-      setTimeout(() => {
-        console.log(`finished`)
-
-        process.exit(0)
-      }, 10000) 
     }
+
+    console.log(JSON.stringify(signedEvent))
+
+    let writeRelays = []
+    for (let [relay, stats] of Object.entries(content)) {
+      if (opened.includes(relay) && stats.write) {
+        writeRelays.push(relay)
+      }
+    }
+
+    for (let relay of pool.relays) {
+      if (writeRelays.includes(relay.url) && relay.ws && relay.ws.readyState === 1) {
+        console.log(`Sending to ${relay.url}`)
+        await relay.send(["EVENT", signedEvent])
+      }
+    }
+    
+    // Wait a bit for responses
+    setTimeout(() => {
+      console.log(`finished`)
+
+      process.exit(0)
+    }, 10000)
   }, 30000)
 }
 
@@ -153,4 +160,93 @@ function npubtopubkey(npub) {
   if (!npub.startsWith('npub') || npub.length < 60) return null
   let decoded = bech32.fromWords( bech32.decode( npub ).words );
   return buffer.Buffer.from( decoded ).toString( 'hex' )
+}
+
+function getSignatureFromBrowser(event) {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((req, res) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      
+      if (req.method === 'GET' && req.url === '/') {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(`
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <title>Sign Nostr Event</title>
+            <style>
+              body { font-family: sans-serif; padding: 20px; text-align: center; }
+              pre { text-align: left; background: #f0f0f0; padding: 10px; overflow-x: auto; }
+              button { padding: 10px 20px; font-size: 1.2em; cursor: pointer; }
+              .error { color: red; }
+              .success { color: green; }
+            </style>
+          </head>
+          <body>
+            <h1>Sign Nostr Event</h1>
+            <p>Please sign the following event using your browser extension (e.g., Alby, nos2x).</p>
+            <button id="signBtn">Sign Event</button>
+            <p id="status"></p>
+            <pre id="eventDisplay">${JSON.stringify(event, null, 2)}</pre>
+            <script>
+              const event = ${JSON.stringify(event)};
+              const btn = document.getElementById('signBtn');
+              const status = document.getElementById('status');
+
+              btn.onclick = async () => {
+                try {
+                  if (!window.nostr) {
+                    throw new Error("No Nostr extension found! Please install Alby, nos2x, or similar.");
+                  }
+                  status.innerText = "Requesting signature...";
+                  const signedEvent = await window.nostr.signEvent(event);
+                  status.innerText = "Signed! Sending back to CLI...";
+                  
+                  await fetch('/signed', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(signedEvent)
+                  });
+                  
+                  status.innerText = "Success! You can close this window.";
+                  status.className = "success";
+                  btn.disabled = true;
+                } catch (err) {
+                  console.error(err);
+                  status.innerText = "Error: " + err.message;
+                  status.className = "error";
+                }
+              };
+            </script>
+          </body>
+          </html>
+        `);
+      } else if (req.method === 'POST' && req.url === '/signed') {
+        let body = '';
+        req.on('data', chunk => {
+          body += chunk.toString();
+        });
+        req.on('end', () => {
+          res.writeHead(200, { 'Content-Type': 'text/plain' });
+          res.end('Received');
+          server.close();
+          try {
+            resolve(JSON.parse(body));
+          } catch (e) {
+            reject(e);
+          }
+        });
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+
+    server.listen(0, 'localhost', async () => {
+      const port = server.address().port;
+      const url = `http://localhost:${port}`;
+      console.log(`Opening browser at ${url} to sign event...`);
+      await open(url);
+    });
+  });
 }

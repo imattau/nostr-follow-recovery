@@ -20,6 +20,7 @@
     "bech32": "^2.0.0",
     "dotenv": "^16.0.3",
     "nostr": "github:jb55/nostr-js",
+    "open": "^11.0.0",
     "ws": "^8.12.1"
   }
 }
