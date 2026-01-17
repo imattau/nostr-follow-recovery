@@ -8,16 +8,28 @@ const WebSocket = require('ws')
 const { bech32 } = require('bech32')
 const buffer = require('buffer')
 
-https.get('https://nostr.watch/relays.json', (resp) => {
-  let data = '';
-  resp.on('data', (chunk) => data += chunk);
-  resp.on('end', () => createPool(JSON.parse(data).relays));
-}).on('error', (err) => console.log("Error: " + err.message));
+const DEFAULT_RELAYS = [
+  "wss://relay.damus.io",
+  "wss://relay.nostr.band",
+  "wss://nos.lol",
+  "wss://nostr.mom",
+  "wss://relay.primal.net",
+  "wss://purplepag.es"
+];
+
+// Start immediately with default relays
+// createPool(DEFAULT_RELAYS);
 
 let me = process.env.PUBKEY
+if (!me) {
+  console.error("Error: PUBKEY is missing in .env file.");
+  process.exit(1);
+}
 if (me.startsWith('npub1')) me = npubtopubkey(me)
 
 console.log(`Finding follow lists for ${me}`)
+
+createPool(DEFAULT_RELAYS);
 
 let follows = []
 let muted = []
@@ -100,7 +112,11 @@ function createPool(relays) {
     console.log(`Found ${event.tags.length} tags on ${relay.url}, added ${count}`)
   });
 
-  setInterval(() => pool.relays.forEach(relay => {if (relay.ws && relay.ws.readyState === WebSocket.OPEN) relay.ws.ping()}), 10000)
+  setInterval(() => pool.relays.forEach(relay => {
+    if (relay.ws && relay.ws.readyState === WebSocket.OPEN && typeof relay.ws.ping === 'function') {
+      relay.ws.ping();
+    }
+  }), 10000)
 
   setTimeout(async () => {
 
