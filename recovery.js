@@ -20,6 +20,7 @@ if (me.startsWith('npub1')) me = npubtopubkey(me)
 console.log(`Finding follow lists for ${me}`)
 
 let follows = []
+let muted = []
 let entries = {}
 let content = {}
 let opened = []
@@ -31,7 +32,7 @@ function createPool(relays) {
   pool.on('open', relay => {
     opened.push(relay.url)
     // console.log(`Open ${relay.url}`)
-    relay.subscribe('sub', {kinds:[3], authors: [me]})
+    relay.subscribe('sub', {kinds:[3, 10000], authors: [me]})
   });
 
   pool.on('notice', (relay, notice) => {
@@ -51,6 +52,15 @@ function createPool(relays) {
   });
   
   pool.on('event', (relay, sub_id, event) => {
+    if (event.kind === 10000) {
+      for (let tag of event.tags) {
+        if (tag[0] === 'p') {
+          muted.push(tag[1])
+        }
+      }
+      return
+    }
+
     if (event.content && event.content.length > 0) {
       for (let [relay, state] of Object.entries(JSON.parse(event.content))) {
         if (!content[relay]) {
@@ -95,6 +105,7 @@ function createPool(relays) {
   setTimeout(async () => {
 
     console.log(`Found ${follows.length} tags`)
+    console.log(`Found ${muted.length} muted`)
     console.log(`Found ${Object.keys(content).length} relays`)
 
     let event = {
@@ -106,6 +117,7 @@ function createPool(relays) {
     }
 
     for (let pubkey of follows) {
+      if (muted.includes(pubkey)) continue
       let entry = entries[pubkey]
       if (entry.relay) {
         event.tags.push(['p', entry.pubkey, entry.relay])
