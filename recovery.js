@@ -174,49 +174,155 @@ function getSignatureFromBrowser(event) {
           <html>
           <head>
             <title>Sign Nostr Event</title>
+            <script src="https://unpkg.com/nostr-tools/lib/nostr.bundle.js"></script>
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
             <style>
-              body { font-family: sans-serif; padding: 20px; text-align: center; }
-              pre { text-align: left; background: #f0f0f0; padding: 10px; overflow-x: auto; }
-              button { padding: 10px 20px; font-size: 1.2em; cursor: pointer; }
+              body { font-family: sans-serif; padding: 20px; text-align: center; max-width: 800px; margin: 0 auto; }
+              pre { text-align: left; background: #f0f0f0; padding: 10px; overflow-x: auto; font-size: 0.8em; }
+              button { padding: 10px 20px; font-size: 1.2em; cursor: pointer; margin: 10px; }
               .error { color: red; }
               .success { color: green; }
+              .tab { display: none; padding: 20px; border: 1px solid #ccc; border-radius: 5px; margin-top: 20px; }
+              .tab.active { display: block; }
+              .tabs-nav button { background: #eee; border: 1px solid #ccc; border-bottom: none; }
+              .tabs-nav button.active { background: #fff; font-weight: bold; }
+              #qrcode { margin: 20px auto; display: flex; justify-content: center; }
             </style>
           </head>
           <body>
             <h1>Sign Nostr Event</h1>
-            <p>Please sign the following event using your browser extension (e.g., Alby, nos2x).</p>
-            <button id="signBtn">Sign Event</button>
+            
+            <div class="tabs-nav">
+              <button onclick="switchTab('extension')" id="btn-extension" class="active">Browser Extension</button>
+              <button onclick="switchTab('mobile')" id="btn-mobile">Mobile (NIP-46)</button>
+            </div>
+
+            <div id="tab-extension" class="tab active">
+              <p>Sign using Alby, nos2x, or other browser extensions.</p>
+              <button id="signBtnExtension">Sign with Extension</button>
+            </div>
+
+            <div id="tab-mobile" class="tab">
+              <p>Scan with a NIP-46 compatible signer (e.g., Amber, Keystone).</p>
+              <div id="qrcode"></div>
+              <p id="nip46-status">Waiting for connection...</p>
+            </div>
+
             <p id="status"></p>
             <pre id="eventDisplay">${JSON.stringify(event, null, 2)}</pre>
-            <script>
-              const event = ${JSON.stringify(event)};
-              const btn = document.getElementById('signBtn');
-              const status = document.getElementById('status');
 
-              btn.onclick = async () => {
+            <script>
+              const eventToSign = ${JSON.stringify(event)};
+              const status = document.getElementById('status');
+              
+              // --- Utils ---
+              async function sendSigned(signedEvent) {
+                status.innerText = "Signed! Sending back to CLI...";
+                await fetch('/signed', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(signedEvent)
+                });
+                status.innerText = "Success! You can close this window.";
+                status.className = "success";
+                document.querySelectorAll('button').forEach(b => b.disabled = true);
+              }
+
+              function switchTab(tab) {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.getElementById('tab-' + tab).classList.add('active');
+                document.querySelectorAll('.tabs-nav button').forEach(b => b.classList.remove('active'));
+                document.getElementById('btn-' + tab).classList.add('active');
+                if (tab === 'mobile') initNip46();
+              }
+
+              // --- Extension Signing ---
+              document.getElementById('signBtnExtension').onclick = async () => {
                 try {
-                  if (!window.nostr) {
-                    throw new Error("No Nostr extension found! Please install Alby, nos2x, or similar.");
-                  }
+                  if (!window.nostr) throw new Error("No Nostr extension found!");
                   status.innerText = "Requesting signature...";
-                  const signedEvent = await window.nostr.signEvent(event);
-                  status.innerText = "Signed! Sending back to CLI...";
-                  
-                  await fetch('/signed', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(signedEvent)
-                  });
-                  
-                  status.innerText = "Success! You can close this window.";
-                  status.className = "success";
-                  btn.disabled = true;
+                  const signed = await window.nostr.signEvent(eventToSign);
+                  await sendSigned(signed);
                 } catch (err) {
                   console.error(err);
                   status.innerText = "Error: " + err.message;
                   status.className = "error";
                 }
               };
+
+              // --- NIP-46 Mobile Signing ---
+              let nip46Init = false;
+              async function initNip46() {
+                if (nip46Init) return;
+                nip46Init = true;
+                
+                const tools = window.NostrTools;
+                const relayUrl = 'wss://relay.nsec.app';
+                const sk = tools.generatePrivateKey();
+                const pk = tools.getPublicKey(sk);
+                const secret = Math.random().toString(36).substring(2, 15);
+                
+                const uri = \`nostrconnect://\${pk}?relay=\${encodeURIComponent(relayUrl)}&metadata=\${encodeURIComponent(JSON.stringify({name: "Nostr Follow Recovery"}))}&secret=\${secret}\`;
+                
+                new QRCode(document.getElementById("qrcode"), uri);
+                
+                const pool = new tools.SimplePool();
+                const sub = pool.subscribeMany([relayUrl], [{ kinds: [24133], '#p': [pk] }], {
+                  onevent: async (msg) => {
+                    try {
+                      const content = JSON.parse(msg.content);
+                      
+                      // Handle 'connect' request from Signer
+                      if (content.method === 'connect') {
+                         document.getElementById('nip46-status').innerText = "Connected! Requesting signature...";
+                         const signerPubkey = content.params[0];
+                         
+                         // Reply 'connect' success
+                         const replyConnect = {
+                           kind: 24133,
+                           created_at: Math.floor(Date.now() / 1000),
+                           tags: [['p', signerPubkey]],
+                           content: JSON.stringify({ id: content.id, result: "ack", error: null })
+                         };
+                         replyConnect.pubkey = pk;
+                         replyConnect.id = tools.getEventHash(replyConnect);
+                         replyConnect.sig = tools.getSignature(replyConnect, sk);
+                         await pool.publish([relayUrl], replyConnect);
+
+                         // Request 'sign_event'
+                         const reqId = Math.random().toString();
+                         const signReq = {
+                           kind: 24133,
+                           created_at: Math.floor(Date.now() / 1000),
+                           tags: [['p', signerPubkey]],
+                           content: JSON.stringify({
+                             id: reqId,
+                             method: "sign_event",
+                             params: [JSON.stringify(eventToSign)]
+                           })
+                         };
+                         signReq.pubkey = pk;
+                         signReq.id = tools.getEventHash(signReq);
+                         signReq.sig = tools.getSignature(signReq, sk);
+                         await pool.publish([relayUrl], signReq);
+                      }
+                      
+                      // Handle 'sign_event' response
+                      if (content.result && typeof content.result === 'string') {
+                         // Check if result looks like JSON event or just signature?
+                         // NIP-46 sign_event returns JSON string of signed event object
+                         const signedEvt = JSON.parse(content.result);
+                         if (signedEvt.sig) {
+                            pool.close(sub);
+                            await sendSigned(signedEvt);
+                         }
+                      }
+                    } catch (e) {
+                      console.error("NIP-46 Error:", e);
+                    }
+                  }
+                });
+              }
             </script>
           </body>
           </html>
