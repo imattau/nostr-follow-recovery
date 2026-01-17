@@ -49,7 +49,7 @@ function createPool(relays, me) {
   pool.on('open', relay => {
     opened.push(relay.url)
     // console.log(`Open ${relay.url}`)
-    relay.subscribe('sub', {kinds:[3, 10000], authors: [me]})
+    relay.subscribe('sub', {kinds:[3, 10000, 10002], authors: [me]})
   });
 
   pool.on('notice', (relay, notice) => {
@@ -73,6 +73,28 @@ function createPool(relays, me) {
       for (let tag of event.tags) {
         if (tag[0] === 'p') {
           muted.push(tag[1])
+        }
+      }
+      return
+    }
+
+    if (event.kind === 10002) {
+      for (let tag of event.tags) {
+        if (tag[0] === 'r') {
+          let url = tag[1];
+          let marker = tag[2];
+          let state = { read: true, write: true };
+          if (marker === 'read') state.write = false;
+          if (marker === 'write') state.read = false;
+          
+          if (!content[url]) {
+            content[url] = state;
+          } else {
+            // Merge state if already exists? Or prefer 10002?
+            // For now, if missing, add it.
+            // If we want 10002 to be authoritative for publishing, we should probably ensure write is true if 10002 says so.
+            if (state.write) content[url].write = true;
+          }
         }
       }
       return
